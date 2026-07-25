@@ -1,0 +1,289 @@
+name: Release
+
+on:
+  pull_request:
+    branches: ["main"]
+    types: [closed]
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      contains(github.event.pull_request.labels.*.name, 'release')
+    runs-on: ubuntu-latest
+
+    env:
+      IMAGE: ghcr.io/omgapuppy/paperless-mcp
+      PACKAGE_OWNER: omgapuppy
+      PACKAGE_NAME: paperless-mcp
+      RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+
+    steps:
+      - name: Check out merged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read and validate version
+        id: version
+        shell: bash
+        run: |
+          version="$(python - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          with Path("pyproject.toml").open("rb") as file:
+              value = tomllib.load(file).get("project", {}).get("version")
+
+          if not isinstance(value, str):
+              raise SystemExit("project.version is missing from pyproject.toml")
+
+          semver = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+          if semver.fullmatch(value) is None:
+              raise SystemExit(
+                  f"project.version must be strict SemVer X.Y.Z without a prefix: {value!r}"
+              )
+
+          print(value)
+          PY
+          )"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=v${version}" >> "${GITHUB_OUTPUT}"
+          echo "staging_tag=sha-${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "Release version: ${version}"
+
+      - name: Inspect merge staging tag
+        id: staging
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          bootstrap=()
+          if [[ -z "$(git tag --list 'v*')" ]]; then
+            bootstrap=(--allow-missing-package)
+          fi
+          python .github/scripts/ghcr_tag_digests.py \
+            --owner "${PACKAGE_OWNER}" \
+            --package "${PACKAGE_NAME}" \
+            --tag "${{ steps.version.outputs.staging_tag }}" \
+            "${bootstrap[@]}" \
+            --github-output
+
+      - name: Set image creation time
+        if: steps.staging.outputs.tag_0_digest == ''
+        id: metadata
+        shell: bash
+        run: |
+          echo "created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        if: steps.staging.outputs.tag_0_digest == ''
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish merge staging image
+        if: steps.staging.outputs.tag_0_digest == ''
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.IMAGE }}:${{ steps.version.outputs.staging_tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=A safety-focused MCP server and CLI for Paperless-ngx document management.
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ env.RELEASE_SHA }}
+            org.opencontainers.image.created=${{ steps.metadata.outputs.created }}
+          annotations: |
+            index:org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            index:org.opencontainers.image.revision=${{ env.RELEASE_SHA }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Select staging digest
+        id: candidate
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          EXISTING_DIGEST: ${{ steps.staging.outputs.tag_0_digest }}
+        shell: bash
+        run: |
+          digest="${EXISTING_DIGEST:-${BUILT_DIGEST}}"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "The staging image did not resolve to a valid sha256 digest" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify staging index identity
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          raw_index="${RUNNER_TEMP}/staging-index.json"
+          docker buildx imagetools inspect "${IMAGE}@${CANDIDATE_DIGEST}" --raw > "${raw_index}"
+          python .github/scripts/verify_oci_index.py \
+            --path "${raw_index}" \
+            --digest "${CANDIDATE_DIGEST}" \
+            --revision "${RELEASE_SHA}" \
+            --version "${VERSION}"
+
+      - name: Inspect immutable image tags
+        id: immutable
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/ghcr_tag_digests.py \
+            --owner "${PACKAGE_OWNER}" \
+            --package "${PACKAGE_NAME}" \
+            --tag "${{ steps.version.outputs.version }}" \
+            --tag "${{ steps.version.outputs.release_tag }}" \
+            --github-output
+
+      - name: Validate immutable image tags
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          VERSION_DIGEST: ${{ steps.immutable.outputs.tag_0_digest }}
+          V_VERSION_DIGEST: ${{ steps.immutable.outputs.tag_1_digest }}
+        shell: bash
+        run: |
+          for existing in "${VERSION_DIGEST}" "${V_VERSION_DIGEST}"; do
+            if [[ -n "${existing}" && "${existing}" != "${CANDIDATE_DIGEST}" ]]; then
+              echo "An immutable version tag already points to a different digest" >&2
+              exit 1
+            fi
+          done
+
+      - name: Promote staging digest to immutable tags
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        shell: bash
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:${RELEASE_TAG}" \
+            "${IMAGE}@${CANDIDATE_DIGEST}"
+
+      - name: Verify immutable image tags
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        shell: bash
+        run: |
+          index=0
+          for tag in "${VERSION}" "${RELEASE_TAG}"; do
+            raw_index="${RUNNER_TEMP}/immutable-${index}.json"
+            docker buildx imagetools inspect "${IMAGE}:${tag}" --raw > "${raw_index}"
+            python .github/scripts/verify_oci_index.py \
+              --path "${raw_index}" \
+              --digest "${CANDIDATE_DIGEST}" \
+              --revision "${RELEASE_SHA}" \
+              --version "${VERSION}"
+            index=$((index + 1))
+          done
+
+      - name: Create or verify Git tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        shell: bash
+        run: |
+          git fetch --force --tags origin
+
+          if git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            tagged_sha="$(git rev-list -n 1 "${RELEASE_TAG}")"
+            if [[ "${tagged_sha}" != "${RELEASE_SHA}" ]]; then
+              echo "Git tag ${RELEASE_TAG} points to ${tagged_sha}, not ${RELEASE_SHA}" >&2
+              exit 1
+            fi
+            echo "Git tag ${RELEASE_TAG} already identifies the merged commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag --annotate "${RELEASE_TAG}" "${RELEASE_SHA}" --message "Release ${RELEASE_TAG}"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
+
+      - name: Inspect GitHub release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/github_release_state.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --tag "${{ steps.version.outputs.release_tag }}" \
+            --github-output
+
+      - name: Create GitHub release with generated notes
+        if: steps.release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        shell: bash
+        run: |
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "${RELEASE_TAG}" \
+            --generate-notes
+
+      - name: Check whether release may update latest
+        id: latest
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          git fetch --force --tags origin
+          git tag --list 'v*' > "${RUNNER_TEMP}/release-tags.txt"
+          python .github/scripts/latest_release_state.py \
+            --current "${VERSION}" \
+            --tags-file "${RUNNER_TEMP}/release-tags.txt" \
+            --github-output
+
+      - name: Promote immutable digest to latest
+        if: steps.latest.outputs.is_highest == 'true'
+        env:
+          CANDIDATE_DIGEST: ${{ steps.candidate.outputs.digest }}
+        shell: bash
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE}:latest" \
+            "${IMAGE}@${CANDIDATE_DIGEST}"
+
+      - name: Preserve latest from a newer release
+        if: steps.latest.outputs.is_highest == 'false'
+        run: |
+          echo "A higher release tag (${{ steps.latest.outputs.highest }}) exists; latest is unchanged."

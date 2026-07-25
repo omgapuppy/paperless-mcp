@@ -1,5 +1,6 @@
-# Copy ONE of these server blocks to your Codex config.toml and adjust the path/image.
-# Keep secret values in the launching process environment, never in this file.
+# Copy ONE server block to your Codex config.toml and adjust every absolute host path.
+# Keep secret values outside this file. The Docker examples run the published stdio
+# image locally; they do not expose an MCP port or add a remote transport.
 
 # Direct checkout using the locked uv environment.
 [mcp_servers.paperless_direct]
@@ -22,9 +23,10 @@ env_vars = [
 startup_timeout_sec = 15
 tool_timeout_sec = 60
 
-# Container alternative. `-i` is required for stdio; `--rm` removes the stopped container.
-# Docker forwards only the named variables; their values do not appear in this argument list.
-[mcp_servers.paperless_docker]
+# Container with environment forwarding. Export PAPERLESS_URL and PAPERLESS_API_TOKEN
+# before starting Codex. Docker receives the variable names, not their values, in args.
+# Users allowed to inspect Docker containers can still see container environment values.
+[mcp_servers.paperless_docker_env]
 command = "docker"
 args = [
   "run",
@@ -33,10 +35,14 @@ args = [
   "--read-only",
   "--tmpfs",
   "/tmp:size=16m,mode=1777",
+  "--mount",
+  "type=bind,src=/absolute/path/to/paperless-audit,dst=/data/audit",
   "--env",
   "PAPERLESS_URL",
   "--env",
   "PAPERLESS_API_TOKEN",
+  "--env",
+  "PAPERLESS_MCP_AUDIT_DIR=/data/audit",
   "--env",
   "PAPERLESS_MCP_MAX_PAGE_SIZE",
   "--env",
@@ -45,11 +51,53 @@ args = [
   "no-new-privileges",
   "--cap-drop",
   "ALL",
-  "paperless-mcp:local",
+  "ghcr.io/omgapuppy/paperless-mcp:latest",
+  "mcp",
 ]
 env_vars = [
   "PAPERLESS_URL",
   "PAPERLESS_API_TOKEN",
+  "PAPERLESS_MCP_MAX_PAGE_SIZE",
+  "PAPERLESS_MCP_MAX_CONTENT_CHARACTERS",
+]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+
+# Container with a read-only token-file mount. Only the in-container path is an
+# environment value. The token file must be readable by the image's non-root user;
+# see docs/operations.md for host permission guidance.
+[mcp_servers.paperless_docker_token_file]
+command = "docker"
+args = [
+  "run",
+  "--rm",
+  "-i",
+  "--read-only",
+  "--tmpfs",
+  "/tmp:size=16m,mode=1777",
+  "--mount",
+  "type=bind,src=/absolute/private/path/paperless-api-token,dst=/run/secrets/paperless_api_token,readonly",
+  "--mount",
+  "type=bind,src=/absolute/path/to/paperless-audit,dst=/data/audit",
+  "--env",
+  "PAPERLESS_URL",
+  "--env",
+  "PAPERLESS_API_TOKEN_FILE=/run/secrets/paperless_api_token",
+  "--env",
+  "PAPERLESS_MCP_AUDIT_DIR=/data/audit",
+  "--env",
+  "PAPERLESS_MCP_MAX_PAGE_SIZE",
+  "--env",
+  "PAPERLESS_MCP_MAX_CONTENT_CHARACTERS",
+  "--security-opt",
+  "no-new-privileges",
+  "--cap-drop",
+  "ALL",
+  "ghcr.io/omgapuppy/paperless-mcp:latest",
+  "mcp",
+]
+env_vars = [
+  "PAPERLESS_URL",
   "PAPERLESS_MCP_MAX_PAGE_SIZE",
   "PAPERLESS_MCP_MAX_CONTENT_CHARACTERS",
 ]

@@ -32,8 +32,8 @@ paperless-mcp = "paperless_mcp.cli:main"
 paperless-mcp-server = "paperless_mcp.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/ardiscully/paperless-mcp"
-Issues = "https://github.com/ardiscully/paperless-mcp/issues"
+Homepage = "https://github.com/omgapuppy/paperless-mcp"
+Issues = "https://github.com/omgapuppy/paperless-mcp/issues"
 
 [dependency-groups]
 dev = [
