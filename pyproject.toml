@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paperless-mcp"
+version = "0.1.0"
+description = "A safety-focused MCP server and CLI for Paperless-ngx document management."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "paperless-mcp contributors" }]
+keywords = ["paperless-ngx", "mcp", "codex", "document-management"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "httpx>=0.28.1,<1",
+  "mcp>=1.28.1,<2",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "PyYAML>=6.0.2,<7",
+  "typer>=0.16,<1",
+]
+
+[project.scripts]
+paperless-mcp = "paperless_mcp.cli:main"
+paperless-mcp-server = "paperless_mcp.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/ardiscully/paperless-mcp"
+Issues = "https://github.com/ardiscully/paperless-mcp/issues"
+
+[dependency-groups]
+dev = [
+  "build>=1.2.2.post1,<2",
+  "mypy>=1.16,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.0,<2",
+  "pytest-cov>=6.2,<7",
+  "respx>=0.22,<1",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paperless_mcp"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "DTZ", "PTH", "RUF"]
+ignore = ["A005"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["RUF001", "S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "integration: tests the application at an HTTP or protocol boundary",
+  "live: requires an explicitly configured live Paperless-ngx instance",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["paperless_mcp"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

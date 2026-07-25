@@ -1,0 +1,35 @@
+# This policy can make behavior more restrictive. It can never enable an
+# environment-disabled server capability.
+protected_tags:
+  - Inbox
+  - Needs Review
+  - Important
+  - Retain Original
+
+review_tag: Needs Review
+
+title:
+  separator: " – "
+  expose_account_numbers: false
+
+classification:
+  allow_new_tags: false
+  preserve_existing_tags_by_default: true
+  auto_apply_confidence: 0.95
+
+tag_rules:
+  prefer:
+    - Finance
+    - Vehicle
+    - Home
+    - Tax
+    - Insurance
+    - Warranty
+  discouraged:
+    - Misc
+    - Document
+    - PDF
+    - Scan
+
+correspondent_aliases:
+  "Electric Ireland DAC": "Electric Ireland"

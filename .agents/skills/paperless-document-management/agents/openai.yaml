@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paperless Document Management"
+  short_description: "Safely classify and maintain Paperless-ngx documents"
+  default_prompt: "Use $paperless-document-management to inspect Paperless taxonomy and preview safe document metadata changes."

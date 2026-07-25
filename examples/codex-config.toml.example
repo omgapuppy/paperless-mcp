@@ -1,0 +1,57 @@
+# Copy ONE of these server blocks to your Codex config.toml and adjust the path/image.
+# Keep secret values in the launching process environment, never in this file.
+
+# Direct checkout using the locked uv environment.
+[mcp_servers.paperless_direct]
+command = "uv"
+args = [
+  "run",
+  "--directory",
+  "/absolute/path/to/paperless-mcp",
+  "--frozen",
+  "paperless-mcp-server",
+]
+env_vars = [
+  "PAPERLESS_URL",
+  "PAPERLESS_API_TOKEN",
+  "PAPERLESS_API_TOKEN_FILE",
+  "PAPERLESS_MCP_MAX_PAGE_SIZE",
+  "PAPERLESS_MCP_MAX_CONTENT_CHARACTERS",
+  "PAPERLESS_MCP_VERIFY_TLS",
+]
+startup_timeout_sec = 15
+tool_timeout_sec = 60
+
+# Container alternative. `-i` is required for stdio; `--rm` removes the stopped container.
+# Docker forwards only the named variables; their values do not appear in this argument list.
+[mcp_servers.paperless_docker]
+command = "docker"
+args = [
+  "run",
+  "--rm",
+  "-i",
+  "--read-only",
+  "--tmpfs",
+  "/tmp:size=16m,mode=1777",
+  "--env",
+  "PAPERLESS_URL",
+  "--env",
+  "PAPERLESS_API_TOKEN",
+  "--env",
+  "PAPERLESS_MCP_MAX_PAGE_SIZE",
+  "--env",
+  "PAPERLESS_MCP_MAX_CONTENT_CHARACTERS",
+  "--security-opt",
+  "no-new-privileges",
+  "--cap-drop",
+  "ALL",
+  "paperless-mcp:local",
+]
+env_vars = [
+  "PAPERLESS_URL",
+  "PAPERLESS_API_TOKEN",
+  "PAPERLESS_MCP_MAX_PAGE_SIZE",
+  "PAPERLESS_MCP_MAX_CONTENT_CHARACTERS",
+]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
