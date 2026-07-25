@@ -77,11 +77,11 @@ See [the detailed safety model](docs/safety-model.md).
 
 ## 6. Requirements
 
-- Python 3.12 or newer
-- [`uv`](https://docs.astral.sh/uv/)
 - A reachable Paperless-ngx instance compatible with REST API schema v10
 - A Paperless user with only the document/taxonomy permissions needed for the intended workflow
-- Optional: Docker with Compose v2
+- Docker for the recommended published-container setup
+- Alternatively, Python 3.12 or newer and [`uv`](https://docs.astral.sh/uv/) for development or a
+  source checkout
 
 ## 7. Create a Paperless API token
 
@@ -114,7 +114,7 @@ private metadata.
 ## 8. Local installation with uv
 
 ```sh
-git clone https://github.com/ardiscully/paperless-mcp.git
+git clone https://github.com/omgapuppy/paperless-mcp.git
 cd paperless-mcp
 uv sync --frozen
 uv run paperless-mcp health
@@ -124,42 +124,74 @@ uv run paperless-mcp documents list --page-size 10
 Copy [the environment example](examples/config.env.example) if desired. Required settings are
 `PAPERLESS_URL` and exactly one of `PAPERLESS_API_TOKEN` or `PAPERLESS_API_TOKEN_FILE`.
 
-## 9. Docker setup
+## 9. Local Docker MCP setup
+
+The published image keeps Python, `uv`, and application dependencies inside a local container:
+
+```text
+Codex -> docker run -i -> paperless-mcp (stdio) -> Paperless-ngx HTTPS API
+```
+
+No MCP port is opened. Codex starts the container locally, communicates over stdin/stdout, and
+removes it when that MCP session ends. Pull a published image before first use:
+
+```sh
+docker pull ghcr.io/omgapuppy/paperless-mcp:latest
+mkdir -p /absolute/path/to/paperless-audit
+```
+
+After the first release, a repository owner must make the GHCR package public once: open the
+`paperless-mcp` package on the `omgapuppy` GitHub profile, choose **Package settings**, then
+**Change visibility** to **Public**. Until then, authenticate Docker with a GitHub token carrying
+`read:packages` (currently a personal access token (classic)); [the operator
+guide](docs/operations.md) gives a command that does not put the token in shell history.
+
+Use `latest` to follow the newest release, or replace it with an immutable release tag such as
+`v0.1.0` (also published as `0.1.0`) for reproducible operation. `latest` does not automatically
+refresh a cached local image; run `docker pull` before restarting Codex when you want to update.
+
+The Codex examples provide two token choices:
+
+1. **Environment forwarding:** export `PAPERLESS_API_TOKEN` before starting Codex. The Docker
+   command contains only `--env PAPERLESS_API_TOKEN`, not the value. This is convenient, but the
+   value remains part of the container environment and is visible to principals that can inspect
+   Docker.
+2. **Read-only token-file mount:** keep the token in a private host location and mount just that
+   file at `/run/secrets/paperless_api_token`. The container environment contains only the file
+   path. This reduces accidental exposure through environment inspection, but host administrators
+   and users with equivalent Docker access can still access the secret.
+
+Both examples use `--rm -i`, a read-only root filesystem, a small writable `/tmp`, a persistent
+audit bind mount, `no-new-privileges`, and no Linux capabilities. The audit host directory must be
+writable by container UID/GID `10001:10001` on native Linux. Token-file permissions must allow
+that non-root container user to read the mounted file; a world-readable file inside a
+host-only `0700` parent directory is one practical option for a single-user machine. Use the
+environment approach if your platform cannot provide a suitably scoped readable mount.
+
+See [the complete Codex configurations](examples/codex-config.toml.example) and
+[the operator guide](docs/operations.md). To test unreleased source instead, build
+`paperless-mcp:local` and substitute that image name:
 
 ```sh
 docker build -t paperless-mcp:local .
-mkdir -p operator-config
-cp examples/config.env.example operator-config/config.env
-cp examples/taxonomy-policy.example.yaml operator-config/taxonomy-policy.yaml
-install -m 0600 /dev/null operator-config/paperless_api_token.secret
-# Edit the three operator-owned files, then:
-docker compose -f examples/docker-compose.yml up --build
 ```
-
-The image runs non-root with no listening port. Its filesystem is read-only except for the audit
-volume and a small tmpfs. Codex launches the container with `-i` because MCP uses stdio; see
-[the complete direct and Docker config](examples/codex-config.toml.example).
 
 ## 10. Register and verify the MCP server in Codex
 
-Codex reads `~/.codex/config.toml`. The safest registration uses a token file path rather than a
-token value:
+Codex reads `~/.codex/config.toml`. Copy one Docker server block from
+[`examples/codex-config.toml.example`](examples/codex-config.toml.example), replace its absolute
+host paths, and choose `latest` or a pinned version. The `env_vars` allowlist makes Codex inherit
+only named host variables; never paste a token value into TOML or Docker arguments.
 
-```sh
-codex mcp add paperless \
-  --env PAPERLESS_URL=https://paperless.example \
-  --env PAPERLESS_API_TOKEN_FILE=/absolute/private/path/paperless-api-token \
-  -- uv run --directory /absolute/path/to/paperless-mcp --frozen paperless-mcp-server
+Restart Codex after editing configuration, then run `codex mcp list` and
+`codex mcp get paperless_docker_env --json` (or the token-file server name). In a Codex task, ask
+it to call `paperless_health`; a successful result reports authenticated connectivity and version
+headers without revealing the token.
 
-codex mcp list
-codex mcp get paperless --json
-```
-
-Alternatively copy one server block from
-[`examples/codex-config.toml.example`](examples/codex-config.toml.example) and use its `env_vars`
-allowlist so secret values are inherited at runtime rather than stored in TOML. Restart Codex
-after editing configuration. In a Codex task, ask it to call `paperless_health`; a successful
-result reports authenticated connectivity and version headers without revealing the token.
+Writes remain disabled in the container. If an operator intentionally enables them, add
+`PAPERLESS_MCP_WRITE_ENABLED` to both the Docker `--env` arguments and the Codex `env_vars`
+allowlist, export it as `true` before starting Codex, and still supply explicit `apply=true` for
+each write call.
 
 ## 11. Skill installation and discovery
 
