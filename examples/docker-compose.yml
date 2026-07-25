@@ -1,8 +1,6 @@
 services:
   paperless-mcp:
-    build:
-      context: ..
-    image: paperless-mcp:local
+    image: ghcr.io/omgapuppy/paperless-mcp:latest
     init: true
     stdin_open: true
     read_only: true
@@ -26,7 +24,8 @@ services:
 
 secrets:
   paperless_api_token:
-    # Create this local file with mode 0600; never commit it.
+    # Native Linux: make this root:10001 with mode 0440 for the non-root container.
+    # Never commit it.
     file: ./paperless_api_token.secret
 
 volumes:
