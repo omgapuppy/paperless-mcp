@@ -282,6 +282,37 @@ class PaperlessClient:
             )
         )
 
+    async def create_taxonomy_item(
+        self,
+        endpoint: TaxonomyEndpoint,
+        payload: Mapping[str, JsonValue],
+    ) -> TaxonomyPayload:
+        """Create one taxonomy item once; POST requests are never retried."""
+        response = await self._request_json("POST", f"api/{endpoint}/", json=payload)
+        return self._validate(TaxonomyPayload, response, endpoint=f"api/{endpoint}/")
+
+    async def patch_taxonomy_item(
+        self,
+        endpoint: TaxonomyEndpoint,
+        item_id: int,
+        payload: Mapping[str, JsonValue],
+    ) -> TaxonomyPayload:
+        """Patch one taxonomy item once; mutation requests are never retried."""
+        response = await self._request_json(
+            "PATCH",
+            f"api/{endpoint}/{item_id}/",
+            json=payload,
+        )
+        return self._validate(
+            TaxonomyPayload,
+            response,
+            endpoint=f"api/{endpoint}/{{id}}/",
+        )
+
+    async def delete_taxonomy_item(self, endpoint: TaxonomyEndpoint, item_id: int) -> None:
+        """Delete one taxonomy item once. Paperless answers 204 with no body."""
+        await self._request_discarding_body("DELETE", f"api/{endpoint}/{item_id}/")
+
     async def get_taxonomy_item(
         self,
         endpoint: TaxonomyEndpoint,
@@ -424,6 +455,38 @@ class PaperlessClient:
         if split.port is not None:
             netloc = f"{netloc}:{split.port}"
         return urlunsplit((split.scheme.casefold(), netloc.casefold(), split.path, query, ""))
+
+    async def _request_discarding_body(self, method: str, endpoint: str) -> None:
+        """Issue a mutation whose success carries no JSON body, such as DELETE."""
+        if self._closed:
+            raise PaperlessConnectionError("The Paperless client is closed.")
+
+        url = urljoin(self._base_url, endpoint)
+        started = time.monotonic()
+        try:
+            response = await self._client.request(method, url, headers=self._headers)
+        except httpx.RequestError as exc:
+            logger.warning(
+                "paperless_request_transport_error",
+                extra={
+                    "operation": f"{method} {urlsplit(url).path}",
+                    "duration_ms": round((time.monotonic() - started) * 1_000, 2),
+                    "retry_count": 0,
+                },
+            )
+            self._raise_connection_error(exc)
+
+        self._discover_versions(response)
+        logger.info(
+            "paperless_request",
+            extra={
+                "operation": f"{method} {urlsplit(url).path}",
+                "duration_ms": round((time.monotonic() - started) * 1_000, 2),
+                "status_code": response.status_code,
+                "retry_count": 0,
+            },
+        )
+        self._raise_for_status(response)
 
     async def _request_json(
         self,

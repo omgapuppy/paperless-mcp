@@ -445,6 +445,74 @@ class AuditRecord(DomainModel):
     metadata_hashes: dict[int, str] = Field(default_factory=dict)
 
 
+class TaxonomyAction(StrEnum):
+    CREATE = "create"
+    RENAME = "rename"
+    DELETE = "delete"
+
+
+class ProposedTaxonomyChange(DomainModel):
+    """One create, rename or delete against a single taxonomy item."""
+
+    action: TaxonomyAction
+    kind: TaxonomyKind
+    item_id: PositiveId | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    expected_current_name: str | None = Field(default=None, min_length=1, max_length=255)
+    parent_id: PositiveId | None = None
+    reason: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def check_shape(self) -> ProposedTaxonomyChange:
+        if self.action is TaxonomyAction.CREATE:
+            if self.name is None:
+                raise ValueError("create requires name.")
+            if self.item_id is not None:
+                raise ValueError("create must not carry item_id.")
+        else:
+            if self.item_id is None:
+                raise ValueError(f"{self.action} requires item_id.")
+            if self.expected_current_name is None:
+                raise ValueError(f"{self.action} requires expected_current_name.")
+        if self.action is TaxonomyAction.RENAME and self.name is None:
+            raise ValueError("rename requires the new name.")
+        if self.action is TaxonomyAction.DELETE and self.name is not None:
+            raise ValueError("delete must not carry name.")
+        if self.parent_id is not None and self.kind is not TaxonomyKind.TAG:
+            raise ValueError("parent_id applies to tags only.")
+        return self
+
+
+class TaxonomyMutation(DomainModel):
+    """The recorded outcome of one proposed taxonomy change."""
+
+    action: TaxonomyAction
+    kind: TaxonomyKind
+    item_id: PositiveId | None = None
+    before_name: str | None = None
+    after_name: str | None = None
+    document_count: int | None = Field(default=None, ge=0)
+    inverse: str | None = None
+    reversible: bool = True
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class TaxonomyMutationResult(DomainModel):
+    status: MutationStatus
+    dry_run: bool
+    requested_count: int = Field(ge=0)
+    applied_count: int = Field(default=0, ge=0)
+    rejected_count: int = Field(default=0, ge=0)
+    failure_count: int = Field(default=0, ge=0)
+    # Carried so one audit finalizer serves both mutation kinds.
+    noop_count: int = Field(default=0, ge=0)
+    conflict_count: int = Field(default=0, ge=0)
+    mutations: tuple[TaxonomyMutation, ...] = ()
+    summary: str
+    run_id: str | None = None
+
+
 class RollbackOperationVerification(StrEnum):
     VERIFIED = "verified"
     INDETERMINATE = "indeterminate"

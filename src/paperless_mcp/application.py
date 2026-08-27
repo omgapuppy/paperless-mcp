@@ -15,6 +15,7 @@ from paperless_mcp.services import (
     MutationService,
     ProposalService,
     RollbackService,
+    TaxonomyMutationService,
     TaxonomyPolicy,
     TaxonomyService,
 )
@@ -29,6 +30,7 @@ class ApplicationServices:
     client: PaperlessClient
     documents: DocumentService
     taxonomy: TaxonomyService
+    taxonomy_mutations: TaxonomyMutationService
     policy: TaxonomyPolicy
     proposals: ProposalService
     mutations: MutationService
@@ -63,6 +65,7 @@ def create_services(settings: Settings | None = None) -> ApplicationServices:
         client=client,
         documents=DocumentService(client, active_settings),
         taxonomy=TaxonomyService(client, active_settings),
+        taxonomy_mutations=TaxonomyMutationService(client, active_settings),
         policy=policy,
         proposals=proposals,
         mutations=mutations,
