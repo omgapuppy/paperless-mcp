@@ -29,7 +29,7 @@ runner = CliRunner()
 @pytest.fixture
 def services(monkeypatch: pytest.MonkeyPatch) -> Iterator[ApplicationServices]:
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/":
+        if request.url.path == "/api/statistics/":
             return httpx.Response(
                 200,
                 json={"status": "OK"},

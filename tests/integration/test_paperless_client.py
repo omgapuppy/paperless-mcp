@@ -69,7 +69,7 @@ def document_payload(
 @pytest.mark.integration
 @respx.mock
 async def test_health_uses_auth_api_version_prefix_and_discovers_versions() -> None:
-    route = respx.get(f"{BASE_URL}/paperless/api/").mock(
+    route = respx.get(f"{BASE_URL}/paperless/api/statistics/").mock(
         return_value=httpx.Response(
             200,
             json={"documents": "ignored additive field"},
@@ -90,6 +90,31 @@ async def test_health_uses_auth_api_version_prefix_and_discovers_versions() -> N
     assert status.api_version == "10"
     assert status.server_version == "3.0.2"
     assert status.status is None
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_health_does_not_probe_the_api_root() -> None:
+    """Paperless-ngx 3.x redirects api/ to a Swagger view that refuses JSON."""
+    root = respx.get(f"{BASE_URL}/api/").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BASE_URL}/api/schema/view/"})
+    )
+    schema_view = respx.get(f"{BASE_URL}/api/schema/view/").mock(return_value=httpx.Response(406))
+    statistics = respx.get(f"{BASE_URL}/api/statistics/").mock(
+        return_value=httpx.Response(
+            200,
+            json={"documents_total": 241, "documents_inbox": 129},
+            headers={"X-Api-Version": "10", "X-Version": "3.0.5"},
+        )
+    )
+
+    async with PaperlessClient(settings()) as client:
+        _payload, versions = await client.health()
+
+    assert statistics.called
+    assert not root.called
+    assert not schema_view.called
+    assert versions.server_version == "3.0.5"
 
 
 @pytest.mark.integration
@@ -553,7 +578,7 @@ async def test_pagination_has_a_request_ceiling_when_pages_are_empty() -> None:
 @pytest.mark.integration
 @respx.mock
 async def test_get_retries_retry_after_and_transient_statuses() -> None:
-    route = respx.get(f"{BASE_URL}/api/").mock(
+    route = respx.get(f"{BASE_URL}/api/statistics/").mock(
         side_effect=[
             httpx.Response(429, headers={"Retry-After": "2"}),
             httpx.Response(503),
@@ -667,7 +692,7 @@ async def test_get_never_retries_tls_verification_failures() -> None:
 @pytest.mark.integration
 @respx.mock
 async def test_rate_limit_error_is_safe_after_bounded_attempts() -> None:
-    route = respx.get(f"{BASE_URL}/api/").mock(
+    route = respx.get(f"{BASE_URL}/api/statistics/").mock(
         return_value=httpx.Response(
             429,
             headers={"Retry-After": "5"},
@@ -690,7 +715,7 @@ async def test_rate_limit_error_is_safe_after_bounded_attempts() -> None:
 @respx.mock
 @pytest.mark.parametrize("status_code", [401, 403])
 async def test_authentication_errors_do_not_echo_response_data(status_code: int) -> None:
-    respx.get(f"{BASE_URL}/api/").mock(
+    respx.get(f"{BASE_URL}/api/statistics/").mock(
         return_value=httpx.Response(
             status_code,
             json={"detail": f"rejected Token {TOKEN}"},
