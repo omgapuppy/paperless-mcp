@@ -210,8 +210,13 @@ class PaperlessClient:
         self._closed = True
 
     async def health(self) -> tuple[HealthPayload, VersionHeaders]:
-        response = await self._request_json("GET", "api/")
-        payload = self._validate(HealthPayload, response, endpoint="api/")
+        # Paperless-ngx 3.x redirects GET api/ to the Swagger UI at
+        # api/schema/view/, which answers 406 for a JSON Accept header, so the
+        # API root is not a usable probe. api/statistics/ is small, returns
+        # JSON on schema v10, and answers 401 when unauthenticated, so it
+        # confirms both reachability and credentials.
+        response = await self._request_json("GET", "api/statistics/")
+        payload = self._validate(HealthPayload, response, endpoint="api/statistics/")
         return payload, self.version_headers
 
     async def list_documents(self, params: Mapping[str, str | int]) -> DocumentPagePayload:
