@@ -24,6 +24,7 @@ from paperless_mcp.models import (
     InitiatingInterface,
     MutationResult,
     RollbackRecord,
+    TaxonomyMutationResult,
 )
 
 FINAL_FILE_MODE = 0o400
@@ -132,7 +133,7 @@ class AuditRun:
         *,
         before: dict[int, CurrentDocumentMetadata],
         rollback: RollbackRecord | dict[str, Any],
-        result: MutationResult,
+        result: MutationResult | TaxonomyMutationResult,
     ) -> None:
         """Publish final artifacts, an integrity manifest, and seal the run read-only."""
         errors = list(self._runtime_errors)

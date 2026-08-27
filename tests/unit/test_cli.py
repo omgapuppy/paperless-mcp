@@ -19,6 +19,7 @@ from paperless_mcp.services import (
     MutationService,
     ProposalService,
     RollbackService,
+    TaxonomyMutationService,
     TaxonomyPolicy,
     TaxonomyService,
 )
@@ -62,6 +63,7 @@ def services(monkeypatch: pytest.MonkeyPatch) -> Iterator[ApplicationServices]:
         client=client,
         documents=DocumentService(client, settings),
         taxonomy=TaxonomyService(client, settings),
+        taxonomy_mutations=TaxonomyMutationService(client, settings),
         policy=policy,
         proposals=proposals,
         mutations=mutations,

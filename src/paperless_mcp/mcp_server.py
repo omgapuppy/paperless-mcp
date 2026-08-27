@@ -29,9 +29,11 @@ from paperless_mcp.models import (
     MutationResult,
     ProposalValidationResult,
     ProposedDocumentChange,
+    ProposedTaxonomyChange,
     TagUsage,
     TaxonomyItem,
     TaxonomyKind,
+    TaxonomyMutationResult,
     TaxonomySnapshot,
 )
 from paperless_mcp.services.rollback import load_rollback_file
@@ -539,6 +541,50 @@ def create_server(
             lambda: _services(context).mutations.add_note(
                 document_id,
                 note,
+                apply=apply,
+                interface=InitiatingInterface.MCP,
+            )
+        )
+
+    @server.tool(
+        name="paperless_preview_taxonomy_changes",
+        description=(
+            "Preview bounded taxonomy create/rename/delete operations. Checks enablement, "
+            "protected tags, stale names and whether an item is still in use. Never writes."
+        ),
+        annotations=READ_ONLY,
+    )
+    async def paperless_preview_taxonomy_changes(
+        changes: list[ProposedTaxonomyChange],
+        context: Context[Any, Any, Any],
+    ) -> TaxonomyMutationResult:
+        return await _safe(
+            lambda: _services(context).taxonomy_mutations.execute(
+                changes,
+                apply=False,
+                interface=InitiatingInterface.MCP,
+            )
+        )
+
+    @server.tool(
+        name="paperless_apply_taxonomy_changes",
+        description=(
+            "Guard bounded taxonomy create/rename/delete. Defaults to dry-run. Creation "
+            "additionally requires taxonomy creation enablement and deletion requires "
+            "delete enablement. An item still referenced by any document is never deleted. "
+            "Renames and creates are reversible; a delete is not, because a recreated item "
+            "receives a new id."
+        ),
+        annotations=MUTATING,
+    )
+    async def paperless_apply_taxonomy_changes(
+        changes: list[ProposedTaxonomyChange],
+        context: Context[Any, Any, Any],
+        apply: bool = False,
+    ) -> TaxonomyMutationResult:
+        return await _safe(
+            lambda: _services(context).taxonomy_mutations.execute(
+                changes,
                 apply=apply,
                 interface=InitiatingInterface.MCP,
             )
