@@ -54,6 +54,15 @@ with `{"note": "..."}`. In v3.0.2 it returns HTTP 200 and a notes array. Note PO
 PATCH are never retried automatically; Paperless documents neither an idempotency key nor a
 conditional mutation contract.
 
+Taxonomy matching rules come from `MatchingModel` in
+[`src/documents/models.py`](https://github.com/paperless-ngx/paperless-ngx/blob/main/src/documents/models.py),
+checked 2026-10-16: `matching_algorithm` is a small integer (0 none, 1 any, 2 all, 3 literal,
+4 regex, 5 fuzzy, 6 auto, default 1), `match` is a `CharField(max_length=256, blank=True)` and
+`is_insensitive` defaults to true. `set_matching` PATCHes exactly those three fields on the item's
+own endpoint, using the same GET-compare-PATCH conflict detection as document changes, and records
+the stored rule from the PATCH response. The default "any" algorithm with blank `match` never
+fires, which is why a text algorithm with empty match text is refused.
+
 ### Model Context Protocol
 
 - Python SDK repository and README:

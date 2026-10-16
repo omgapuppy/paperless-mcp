@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
@@ -9,6 +12,8 @@ import respx
 from paperless_mcp.client import PaperlessClient
 from paperless_mcp.config import Settings
 from paperless_mcp.models import (
+    MatchingAlgorithm,
+    MatchingRule,
     MutationStatus,
     ProposedTaxonomyChange,
     TaxonomyAction,
@@ -289,5 +294,198 @@ async def test_rename_proposal_requires_an_expected_current_name() -> None:
             kind=TaxonomyKind.TAG,
             item_id=5,
             name="area/banking",
+            reason="consolidating",
+        )
+
+
+def correspondent_item(
+    item_id: int,
+    name: str,
+    *,
+    algorithm: int = 1,
+    match: str = "",
+    insensitive: bool = True,
+) -> dict[str, object]:
+    return {
+        "id": item_id,
+        "name": name,
+        "slug": name.lower(),
+        "document_count": 69,
+        "matching_algorithm": algorithm,
+        "match": match,
+        "is_insensitive": insensitive,
+    }
+
+
+def set_matching(
+    item_id: int,
+    expected_name: str,
+    expected: MatchingRule,
+    new: MatchingRule,
+    kind: TaxonomyKind = TaxonomyKind.CORRESPONDENT,
+) -> ProposedTaxonomyChange:
+    return ProposedTaxonomyChange(
+        action=TaxonomyAction.SET_MATCHING,
+        kind=kind,
+        item_id=item_id,
+        expected_current_name=expected_name,
+        expected_current_matching=expected,
+        matching=new,
+        reason="empty any-word rule never matches",
+    )
+
+
+EMPTY_ANY = MatchingRule(algorithm=MatchingAlgorithm.ANY, match="")
+IONITY_LITERAL = MatchingRule(algorithm=MatchingAlgorithm.LITERAL, match="IONITY")
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_set_matching_preview_reports_inverse_without_writing() -> None:
+    respx.get(f"{BASE_URL}/api/correspondents/5/").mock(
+        return_value=httpx.Response(200, json=correspondent_item(5, "IONITY"))
+    )
+    patch = respx.patch(f"{BASE_URL}/api/correspondents/5/").mock(return_value=httpx.Response(200))
+
+    async with PaperlessClient(settings()) as client:
+        result = await TaxonomyMutationService(client, settings()).execute(
+            [set_matching(5, "IONITY", EMPTY_ANY, IONITY_LITERAL)], apply=False
+        )
+
+    assert result.status is MutationStatus.DRY_RUN
+    assert not patch.called
+    mutation = result.mutations[0]
+    assert mutation.before_matching == EMPTY_ANY
+    assert mutation.after_matching == IONITY_LITERAL
+    assert mutation.reversible is True
+    assert "restore matching to any ''" in (mutation.inverse or "")
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_set_matching_applies_wire_values_and_records_restore_plan(
+    tmp_path: Path,
+) -> None:
+    respx.get(f"{BASE_URL}/api/correspondents/5/").mock(
+        return_value=httpx.Response(200, json=correspondent_item(5, "IONITY"))
+    )
+    patch = respx.patch(f"{BASE_URL}/api/correspondents/5/").mock(
+        return_value=httpx.Response(
+            200, json=correspondent_item(5, "IONITY", algorithm=3, match="IONITY")
+        )
+    )
+    configured = settings(tmp_path)
+
+    async with PaperlessClient(configured) as client:
+        result = await TaxonomyMutationService(client, configured).execute(
+            [set_matching(5, "IONITY", EMPTY_ANY, IONITY_LITERAL)], apply=True
+        )
+
+    assert result.status is MutationStatus.APPLIED
+    assert json.loads(patch.calls.last.request.content) == {
+        "matching_algorithm": 3,
+        "match": "IONITY",
+        "is_insensitive": True,
+    }
+    assert result.mutations[0].after_matching == IONITY_LITERAL
+    assert result.run_id is not None
+    rollback = json.loads(next(tmp_path.rglob("rollback.json")).read_text())
+    restore = rollback["operations"][0]["restore_matching"]
+    assert restore == {"algorithm": "any", "match": "", "is_insensitive": True}
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_set_matching_refuses_when_the_live_rule_has_drifted() -> None:
+    respx.get(f"{BASE_URL}/api/correspondents/5/").mock(
+        return_value=httpx.Response(
+            200, json=correspondent_item(5, "IONITY", algorithm=3, match="IONITY GmbH")
+        )
+    )
+    patch = respx.patch(f"{BASE_URL}/api/correspondents/5/").mock(return_value=httpx.Response(200))
+
+    async with PaperlessClient(settings()) as client:
+        result = await TaxonomyMutationService(client, settings()).execute(
+            [set_matching(5, "IONITY", EMPTY_ANY, IONITY_LITERAL)], apply=True
+        )
+
+    assert result.status is MutationStatus.REJECTED
+    assert not patch.called
+    assert "Stale proposal" in (result.mutations[0].error_message or "")
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_set_matching_is_blocked_when_writes_are_disabled() -> None:
+    patch = respx.patch(f"{BASE_URL}/api/correspondents/5/").mock(return_value=httpx.Response(200))
+    disabled = settings(PAPERLESS_MCP_WRITE_ENABLED=False)
+
+    async with PaperlessClient(disabled) as client:
+        result = await TaxonomyMutationService(client, disabled).execute(
+            [set_matching(5, "IONITY", EMPTY_ANY, IONITY_LITERAL)], apply=True
+        )
+
+    assert result.status is MutationStatus.REJECTED
+    assert not patch.called
+    assert result.mutations[0].error_code == "WritesDisabledError"
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_set_matching_refuses_a_protected_tag() -> None:
+    respx.get(f"{BASE_URL}/api/tags/12/").mock(
+        return_value=httpx.Response(
+            200, json={**tag_item(12, "needs-review", count=1), "matching_algorithm": 6}
+        )
+    )
+    patch = respx.patch(f"{BASE_URL}/api/tags/12/").mock(return_value=httpx.Response(200))
+    auto = MatchingRule(algorithm=MatchingAlgorithm.AUTO)
+
+    async with PaperlessClient(settings()) as client:
+        result = await TaxonomyMutationService(client, settings()).execute(
+            [
+                set_matching(
+                    12,
+                    "needs-review",
+                    auto,
+                    EMPTY_ANY.model_copy(update={"algorithm": MatchingAlgorithm.NONE}),
+                    kind=TaxonomyKind.TAG,
+                )
+            ],
+            apply=True,
+        )
+
+    assert result.status is MutationStatus.REJECTED
+    assert not patch.called
+    assert "protected" in (result.mutations[0].error_message or "")
+
+
+@pytest.mark.integration
+async def test_set_matching_rejects_a_rule_that_can_never_fire() -> None:
+    with pytest.raises(ValueError, match="requires non-empty match text"):
+        set_matching(5, "IONITY", IONITY_LITERAL, EMPTY_ANY)
+
+
+@pytest.mark.integration
+async def test_set_matching_rejects_an_invalid_regex() -> None:
+    with pytest.raises(ValueError, match="not a valid regular expression"):
+        set_matching(
+            5,
+            "IONITY",
+            EMPTY_ANY,
+            MatchingRule(algorithm=MatchingAlgorithm.REGEX, match="INV-(DF"),
+        )
+
+
+@pytest.mark.integration
+async def test_matching_fields_are_refused_on_other_actions() -> None:
+    with pytest.raises(ValueError, match="apply to set_matching only"):
+        ProposedTaxonomyChange(
+            action=TaxonomyAction.RENAME,
+            kind=TaxonomyKind.TAG,
+            item_id=5,
+            expected_current_name="finance",
+            name="area/banking",
+            matching=IONITY_LITERAL,
             reason="consolidating",
         )

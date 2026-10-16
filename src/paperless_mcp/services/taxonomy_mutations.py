@@ -1,10 +1,13 @@
-"""Guarded create, rename and delete operations against Paperless taxonomy.
+"""Guarded create, rename, delete and matching-rule operations against Paperless taxonomy.
 
 Taxonomy mutation is deliberately narrower than document mutation. A tag or
 correspondent is referenced by many documents, so the destructive direction is
 delete, and a delete that silently detached documents would be unrecoverable
 through this server. Every delete therefore refuses while the item is still in
 use, and reassignment must happen first through the document mutation path.
+
+A matching-rule change only affects documents consumed after it lands; it never
+re-matches existing documents, so its inverse is simply the previous rule.
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ from paperless_mcp.errors import (
 )
 from paperless_mcp.models import (
     InitiatingInterface,
+    MatchingAlgorithm,
+    MatchingRule,
     MutationStatus,
     ProposedTaxonomyChange,
     TaxonomyAction,
@@ -49,7 +54,7 @@ def _endpoint(kind: TaxonomyKind) -> TaxonomyEndpoint:
 
 
 class TaxonomyMutationService:
-    """Preview and guarded application of taxonomy create/rename/delete."""
+    """Preview and guarded application of taxonomy create/rename/delete/set_matching."""
 
     def __init__(self, client: PaperlessClient, settings: Settings) -> None:
         self._client = client
@@ -150,6 +155,11 @@ class TaxonomyMutationService:
                         "kind": m.kind.value,
                         "item_id": m.item_id,
                         "inverse": m.inverse,
+                        "restore_matching": (
+                            m.before_matching.model_dump(mode="json")
+                            if m.before_matching is not None
+                            else None
+                        ),
                         "reversible": m.reversible,
                     }
                     for m in applied
@@ -169,6 +179,7 @@ class TaxonomyMutationService:
             kind=change.kind,
             item_id=change.item_id,
             after_name=change.name,
+            after_matching=change.matching,
         )
 
         if not self._settings.write_enabled:
@@ -215,8 +226,11 @@ class TaxonomyMutationService:
             return self._reject(
                 planned,
                 PaperlessMCPError,
-                f"{current.name!r} is protected and cannot be renamed or deleted.",
+                f"{current.name!r} is protected and cannot be renamed, deleted or rematched.",
             )
+
+        if change.action is TaxonomyAction.SET_MATCHING:
+            return self._preflight_matching(change, planned, current)
 
         if change.action is TaxonomyAction.DELETE:
             in_use = current.document_count or 0
@@ -246,6 +260,36 @@ class TaxonomyMutationService:
             update={"inverse": f"rename back to {current.name!r}", "reversible": True}
         )
 
+    def _preflight_matching(
+        self,
+        change: ProposedTaxonomyChange,
+        planned: TaxonomyMutation,
+        current: TaxonomyPayload,
+    ) -> TaxonomyMutation:
+        try:
+            live = _matching_rule(current)
+        except ValueError as exc:
+            return self._reject(planned, PaperlessMCPError, str(exc))
+        planned = planned.model_copy(
+            update={
+                "before_matching": live,
+                "after_name": current.name,
+                "inverse": (
+                    f"restore matching to {live.algorithm} {live.match!r} "
+                    f"(insensitive={live.is_insensitive})"
+                ),
+                "reversible": True,
+            }
+        )
+        if live != change.expected_current_matching:
+            return self._reject(
+                planned,
+                PaperlessMCPError,
+                f"Stale proposal: item {change.item_id} now matches {live.algorithm} "
+                f"{live.match!r} (insensitive={live.is_insensitive}), not the expected rule.",
+            )
+        return planned
+
     async def _apply_one(
         self,
         change: ProposedTaxonomyChange,
@@ -265,6 +309,20 @@ class TaxonomyMutationService:
                 {"name": change.name},
             )
             return planned.model_copy(update={"after_name": updated.name})
+        if change.action is TaxonomyAction.SET_MATCHING:
+            assert change.matching is not None
+            updated = await self._client.patch_taxonomy_item(
+                endpoint,
+                int(change.item_id or 0),
+                {
+                    "matching_algorithm": change.matching.algorithm.wire_value,
+                    "match": change.matching.match,
+                    "is_insensitive": change.matching.is_insensitive,
+                },
+            )
+            # Record what Paperless stored, not what was asked for, so the audit
+            # reflects the live rule even if the server normalised it.
+            return planned.model_copy(update={"after_matching": _matching_rule(updated)})
         await self._client.delete_taxonomy_item(endpoint, int(change.item_id or 0))
         return planned.model_copy(update={"after_name": None})
 
@@ -318,6 +376,14 @@ class TaxonomyMutationService:
             summary=summary,
             run_id=run_id,
         )
+
+
+def _matching_rule(payload: TaxonomyPayload) -> MatchingRule:
+    return MatchingRule(
+        algorithm=MatchingAlgorithm.from_wire(payload.matching_algorithm or 0),
+        match=payload.match or "",
+        is_insensitive=True if payload.is_insensitive is None else payload.is_insensitive,
+    )
 
 
 def _casefold(value: str) -> str:
