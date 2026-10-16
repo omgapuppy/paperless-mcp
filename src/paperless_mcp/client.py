@@ -110,6 +110,7 @@ class TaxonomyPayload(WireModel):
     children: list[TaxonomyPayload] = Field(default_factory=list)
     document_count: int | None = Field(default=None, ge=0)
     matching_algorithm: int | None = None
+    match: str | None = None
     is_insensitive: bool | None = None
 
 

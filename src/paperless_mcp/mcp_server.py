@@ -549,8 +549,9 @@ def create_server(
     @server.tool(
         name="paperless_preview_taxonomy_changes",
         description=(
-            "Preview bounded taxonomy create/rename/delete operations. Checks enablement, "
-            "protected tags, stale names and whether an item is still in use. Never writes."
+            "Preview bounded taxonomy create/rename/delete/set_matching operations. Checks "
+            "enablement, protected tags, stale names and matching rules, and whether an item "
+            "is still in use. Never writes."
         ),
         annotations=READ_ONLY,
     )
@@ -569,7 +570,9 @@ def create_server(
     @server.tool(
         name="paperless_apply_taxonomy_changes",
         description=(
-            "Guard bounded taxonomy create/rename/delete. Defaults to dry-run. Creation "
+            "Guard bounded taxonomy create/rename/delete/set_matching. Defaults to dry-run. "
+            "set_matching replaces an item's auto-assignment rule and must name the exact "
+            "current rule; it affects only documents consumed afterwards. Creation "
             "additionally requires taxonomy creation enablement and deletion requires "
             "delete enablement. An item still referenced by any document is never deleted. "
             "Renames and creates are reversible; a delete is not, because a recreated item "
