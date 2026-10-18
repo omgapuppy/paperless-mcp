@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `set_matching` taxonomy action on `paperless_preview_taxonomy_changes` /
+  `paperless_apply_taxonomy_changes`: replaces an item's auto-assignment rule with a stale-state
+  check against the exact current rule, refuses rules that can never fire, and records the
+  previous rule in the audit rollback plan.
+
+### API
+
+- `ProposedTaxonomyChange` gains optional `matching` and `expected_current_matching`;
+  `TaxonomyMutation` gains `before_matching` and `after_matching`. Taxonomy list items gain
+  `match`. All additions are optional; existing calls are unchanged.
+
 ## [0.1.0] - 2026-07-25
 
 ### Added

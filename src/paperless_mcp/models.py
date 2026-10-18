@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Annotated, Self
@@ -71,7 +72,75 @@ class TaxonomyItem(DomainModel):
     slug: str | None = None
     document_count: int | None = Field(default=None, ge=0)
     matching_algorithm: int | None = None
+    match: str | None = None
     is_insensitive: bool | None = None
+
+
+class MatchingAlgorithm(StrEnum):
+    """Paperless MatchingModel algorithms, named so proposals are self-describing."""
+
+    NONE = "none"
+    ANY = "any"
+    ALL = "all"
+    LITERAL = "literal"
+    REGEX = "regex"
+    FUZZY = "fuzzy"
+    AUTO = "auto"
+
+    @property
+    def wire_value(self) -> int:
+        return _MATCHING_WIRE_VALUES[self]
+
+    @classmethod
+    def from_wire(cls, value: int) -> MatchingAlgorithm:
+        for algorithm, wire in _MATCHING_WIRE_VALUES.items():
+            if wire == value:
+                return algorithm
+        raise ValueError(f"Unknown Paperless matching algorithm {value}.")
+
+
+_MATCHING_WIRE_VALUES: dict[MatchingAlgorithm, int] = {
+    MatchingAlgorithm.NONE: 0,
+    MatchingAlgorithm.ANY: 1,
+    MatchingAlgorithm.ALL: 2,
+    MatchingAlgorithm.LITERAL: 3,
+    MatchingAlgorithm.REGEX: 4,
+    MatchingAlgorithm.FUZZY: 5,
+    MatchingAlgorithm.AUTO: 6,
+}
+
+# Algorithms that only ever fire on the match text; with an empty match they
+# silently never match, which is exactly the drift this rule exists to fix.
+_TEXT_MATCHING = frozenset(
+    {
+        MatchingAlgorithm.ANY,
+        MatchingAlgorithm.ALL,
+        MatchingAlgorithm.LITERAL,
+        MatchingAlgorithm.REGEX,
+        MatchingAlgorithm.FUZZY,
+    }
+)
+
+
+class MatchingRule(DomainModel):
+    """The auto-assignment rule of one tag, correspondent, type or storage path."""
+
+    # Compared exactly against live state, so whitespace is significant here.
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, str_strip_whitespace=False)
+
+    algorithm: MatchingAlgorithm
+    match: str = Field(default="", max_length=256)
+    is_insensitive: bool = True
+
+    def check_usable(self) -> None:
+        """Reject a rule that can never fire. Only proposed rules are checked."""
+        if self.algorithm in _TEXT_MATCHING and not self.match.strip():
+            raise ValueError(f"matching algorithm {self.algorithm} requires non-empty match text.")
+        if self.algorithm is MatchingAlgorithm.REGEX:
+            try:
+                re.compile(self.match)
+            except re.error as exc:
+                raise ValueError(f"match is not a valid regular expression: {exc}") from exc
 
 
 class CustomFieldDefinition(DomainModel):
@@ -449,10 +518,11 @@ class TaxonomyAction(StrEnum):
     CREATE = "create"
     RENAME = "rename"
     DELETE = "delete"
+    SET_MATCHING = "set_matching"
 
 
 class ProposedTaxonomyChange(DomainModel):
-    """One create, rename or delete against a single taxonomy item."""
+    """One create, rename, delete or matching-rule change against a single taxonomy item."""
 
     action: TaxonomyAction
     kind: TaxonomyKind
@@ -460,10 +530,23 @@ class ProposedTaxonomyChange(DomainModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     expected_current_name: str | None = Field(default=None, min_length=1, max_length=255)
     parent_id: PositiveId | None = None
+    matching: MatchingRule | None = None
+    expected_current_matching: MatchingRule | None = None
     reason: str = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
     def check_shape(self) -> ProposedTaxonomyChange:
+        if self.action is TaxonomyAction.SET_MATCHING:
+            if self.item_id is None or self.expected_current_name is None:
+                raise ValueError("set_matching requires item_id and expected_current_name.")
+            if self.matching is None or self.expected_current_matching is None:
+                raise ValueError("set_matching requires matching and expected_current_matching.")
+            if self.name is not None or self.parent_id is not None:
+                raise ValueError("set_matching must not carry name or parent_id.")
+            self.matching.check_usable()
+            return self
+        if self.matching is not None or self.expected_current_matching is not None:
+            raise ValueError("matching fields apply to set_matching only.")
         if self.action is TaxonomyAction.CREATE:
             if self.name is None:
                 raise ValueError("create requires name.")
@@ -491,6 +574,8 @@ class TaxonomyMutation(DomainModel):
     item_id: PositiveId | None = None
     before_name: str | None = None
     after_name: str | None = None
+    before_matching: MatchingRule | None = None
+    after_matching: MatchingRule | None = None
     document_count: int | None = Field(default=None, ge=0)
     inverse: str | None = None
     reversible: bool = True

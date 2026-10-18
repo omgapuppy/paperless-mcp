@@ -57,6 +57,7 @@ class TaxonomyService:
                 slug=payload.slug,
                 document_count=payload.document_count,
                 matching_algorithm=payload.matching_algorithm,
+                match=payload.match,
                 is_insensitive=payload.is_insensitive,
             )
             for payload in taxonomy_payloads

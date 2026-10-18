@@ -76,3 +76,18 @@ Applied metadata results report actual writes separately from no-ops (`noop_coun
 apply has status `no_op`. Batches preflight every item before the first write.
 Dry-run results include `audit_preview`, containing the proposal/interface identity and exact
 rollback operations that would be generated, without creating persistent files.
+
+## Taxonomy matching rules
+
+- `paperless_preview_taxonomy_changes(changes)` and
+  `paperless_apply_taxonomy_changes(changes, apply=false)` accept `action: "set_matching"` for a
+  tag, correspondent, document type or storage path. The change carries `item_id`,
+  `expected_current_name`, `expected_current_matching` and the new `matching`, each rule being
+  `{algorithm, match, is_insensitive}` with `algorithm` one of `none`, `any`, `all`, `literal`,
+  `regex`, `fuzzy`, `auto`.
+- The live rule must equal `expected_current_matching` exactly, or the change is rejected as stale.
+  Read it first from the list tools, which now include `match`.
+- A text algorithm with empty `match` text, or a `regex` that does not compile, is refused at the
+  model boundary because it could never fire. Protected tags cannot be rematched.
+- Only server-side write enablement is required. The rule affects documents consumed afterwards;
+  existing documents are not re-matched. The audit rollback plan records `restore_matching`.
